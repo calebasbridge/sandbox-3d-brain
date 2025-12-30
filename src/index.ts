@@ -4,12 +4,9 @@ export interface Env {
   ELEVENLABS_API_KEY: string;
   GEMINI_API_KEY: string;
   VOICE_ID: string;
-  ALLOWED_ORIGINS?: string; // Added to support CORS config
+  ALLOWED_ORIGINS?: string;
 }
 
-// -----------------------------------------------------------------------------
-// 1. SYSTEM PROMPT (LITE VERSION FOR 3D MVP)
-// -----------------------------------------------------------------------------
 const SYSTEM_PROMPT = `
 You are Marcus Chen, an inmate in a medium-security correctional facility.
 Context: You are sitting in the dayroom. A correctional officer (the user) is approaching you.
@@ -21,45 +18,28 @@ Rules:
 3. If the officer is aggressive, shut down. If they are helpful, open up.
 `;
 
-// -----------------------------------------------------------------------------
-// 2. MAIN WORKER LOGIC
-// -----------------------------------------------------------------------------
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     
-    // A. HANDLE PREFLIGHT (The "Knock")
-    if (request.method === "OPTIONS") {
-      const headers = getCorsHeaders(request, env);
-      return new Response(null, {
-        headers: headers
-      });
-    }
-
-    if (request.method !== "POST") {
-      // Use dynamic headers even for errors
-      const headers = getCorsHeaders(request, env);
-      return new Response("Method not allowed", { status: 405, headers: headers });
-    }
+    // 1. CORS GATEKEEPER (Allow All for Dev)
+    if (request.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders() });
+    if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers: getCorsHeaders() });
 
     try {
-      console.log("🧠 Neural Link Active: Processing Audio...");
+      console.log("🧠 Neural Link Active...");
       
-      // B. Parse the uploaded audio file from the React Frontend
       const formData = await request.formData();
       const audioFile = formData.get("audio");
 
-      if (!audioFile || !(audioFile instanceof File)) {
-        throw new Error("No audio file provided");
-      }
+      if (!audioFile || !(audioFile instanceof File)) throw new Error("No audio file provided");
+      console.log(`🎤 Received Audio: ${audioFile.size} bytes`);
 
-      const arrayBuffer = await audioFile.arrayBuffer();
+      if (audioFile.size < 100) throw new Error("Audio file too short.");
 
-      // -----------------------------------------------------------------------
-      // STEP C: SPEECH-TO-TEXT (ElevenLabs Scribe)
-      // -----------------------------------------------------------------------
+      // STEP 1: LISTEN
       const sttFormData = new FormData();
       sttFormData.append("model_id", "scribe_v1");
-      sttFormData.append("file", new File([arrayBuffer], "audio.webm", { type: "audio/webm" }));
+      sttFormData.append("file", audioFile); 
 
       const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
@@ -73,43 +53,37 @@ export default {
       }
       
       const sttJson = await sttResponse.json() as any;
-      const userText = sttJson.text;
-      console.log("🗣️ Heard:", userText);
+      const userText = sttJson.text || "";
+      console.log(`🗣️ Heard: "${userText}"`);
 
-      // -----------------------------------------------------------------------
-      // STEP D: INTELLIGENCE (Google Gemini 1.5 Flash)
-      // -----------------------------------------------------------------------
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+      // STEP 2: THINK
+      let aiText = "I couldn't hear you, Officer. Say again?";
       
-      const geminiPayload = {
-        contents: [
-          {
-            parts: [
-              { text: SYSTEM_PROMPT }, 
-              { text: `User said: "${userText}"` }
-            ]
-          }
-        ]
-      };
+      if (userText.trim().length > 1) {
+        // Updated URL: Updated to Gemini 2.5-flash'
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+        
+        const geminiResponse = await fetch(geminiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: SYSTEM_PROMPT }, { text: `User said: "${userText}"` }] }]
+          })
+        });
 
-      const geminiResponse = await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(geminiPayload)
-      });
-
-      if (!geminiResponse.ok) {
-         const err = await geminiResponse.text();
-         throw new Error(`Gemini API Failed: ${err}`);
+        if (!geminiResponse.ok) {
+           const err = await geminiResponse.text();
+           console.error(`Gemini Error: ${err}`);
+           aiText = "My head hurts... (AI Error)"; 
+        } else {
+           const geminiJson = await geminiResponse.json() as any;
+           aiText = geminiJson.candidates?.[0]?.content?.parts?.[0]?.text || aiText;
+        }
       }
+      
+      console.log(`🤖 Responding: "${aiText}"`);
 
-      const geminiJson = await geminiResponse.json() as any;
-      const aiText = geminiJson.candidates?.[0]?.content?.parts?.[0]?.text || "...";
-      console.log("🤖 Thinking:", aiText);
-
-      // -----------------------------------------------------------------------
-      // STEP E: TEXT-TO-SPEECH (ElevenLabs)
-      // -----------------------------------------------------------------------
+      // STEP 3: SPEAK
       const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${env.VOICE_ID}/stream`, {
         method: "POST",
         headers: {
@@ -123,66 +97,29 @@ export default {
         }),
       });
 
-      if (!ttsResponse.ok) {
-         const err = await ttsResponse.text();
-         throw new Error(`ElevenLabs TTS Failed: ${err}`);
-      }
+      if (!ttsResponse.ok) throw new Error(`ElevenLabs TTS Failed`);
 
-      // -----------------------------------------------------------------------
-      // STEP F: RETURN PACKAGE (Dynamic Headers)
-      // -----------------------------------------------------------------------
-      
-      // 1. Get the VIP Pass (Dynamic CORS)
-      const dynamicHeaders = getCorsHeaders(request, env);
-    
-      // 2. Wrap it in a Headers object so we can add more info
-      const newHeaders = new Headers(dynamicHeaders);
-
-      // 3. Add the specific info for this Audio response
+      // STEP 4: RETURN
+      const newHeaders = new Headers(getCorsHeaders());
       newHeaders.set("Content-Type", "audio/mpeg");
       newHeaders.set("X-Ai-Text", aiText);
       newHeaders.set("X-User-Text", userText);
       newHeaders.set("Access-Control-Expose-Headers", "X-Ai-Text, X-User-Text");
 
-      // 4. Return the Final Package
       return new Response(ttsResponse.body, { headers: newHeaders });
 
     } catch (err: any) {
       console.error(err);
-      
-      // Use dynamic headers for the error response too
-      const errorHeaders = getCorsHeaders(request, env);
-      
-      return new Response(JSON.stringify({ error: err.message }), { 
-        status: 500, 
-        headers: errorHeaders 
-      });
+      return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: getCorsHeaders() });
     }
   }
 }
 
-// -----------------------------------------------------------------------------
-// 3. HELPER: CORS (Dynamic)
-// -----------------------------------------------------------------------------
-function getCorsHeaders(request: Request, env: Env) {
-  const origin = request.headers.get("Origin");
-  const allowedOrigins = (env.ALLOWED_ORIGINS || "").split(",");
-  
-  // Check if the requester is on the VIP list
-  if (origin && allowedOrigins.includes(origin)) {
-    return {
-      "Access-Control-Allow-Origin": origin,
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, x-api-key",
-      "Access-Control-Max-Age": "86400",
-    };
-  }
-  
-  // Default fallback (safe/strict)
+function getCorsHeaders() {
   return {
-    "Access-Control-Allow-Origin": allowedOrigins[0] || "http://localhost:5173",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Max-Age": "86400", // <--- ADDED THIS TO FIX TYPE ERRORS
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, x-api-key",
+    "Access-Control-Max-Age": "86400",
   };
 }
