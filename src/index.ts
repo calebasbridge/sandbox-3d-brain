@@ -41,12 +41,12 @@ export default {
 
       if (!audioFile || !(audioFile instanceof File)) throw new Error("No audio file provided");
 
-      console.log(`🎤 Audio Received: ${audioFile.size} bytes, type: ${audioFile.type}`);
+      console.log(`🎤 Audio Received: ${audioFile.size} bytes`);
 
-      // STEP 1: HEAR (ElevenLabs Scribe - Speech to Text)
+      // STEP 1: HEAR (ElevenLabs Scribe_v1)
       const scribeFormData = new FormData();
       scribeFormData.append("file", audioFile);
-      scribeFormData.append("model_id", "scribe_v1"); // ✅ FIXED: Standard Model ID
+      scribeFormData.append("model_id", "scribe_v1"); 
 
       const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
@@ -55,7 +55,6 @@ export default {
       });
 
       if (!sttResponse.ok) {
-        // 🔍 DEBUG: Read the actual error message from ElevenLabs
         const errorText = await sttResponse.text();
         throw new Error(`ElevenLabs STT Failed (${sttResponse.status}): ${errorText}`);
       }
@@ -65,7 +64,7 @@ export default {
 
       console.log(`👂 Heard: "${userText}"`);
 
-      // STEP 2: THINK (Gemini 2.0 Flash - JSON Mode)
+      // STEP 2: THINK (Gemini 2.0 Flash - JSON Mode + SAFETY OFF)
       let history = [];
       try {
         if (historyRaw) history = JSON.parse(historyRaw);
@@ -107,7 +106,14 @@ export default {
         ],
         generationConfig: {
           response_mime_type: "application/json" 
-        }
+        },
+        // 🛡️ CRITICAL: DISABLE SAFETY FILTERS FOR PRISON SIMULATION
+        safetySettings: [
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ]
       };
 
       const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${env.GEMINI_API_KEY}`, {
@@ -117,14 +123,21 @@ export default {
       });
 
       const geminiData: any = await geminiResponse.json();
+      
+      // 🕵️ DEBUG: Log the full response to see "finishReason"
+      console.log("Gemini Raw Response:", JSON.stringify(geminiData));
+
       const rawJSON = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
       
-      if (!rawJSON) throw new Error("Gemini returned empty response");
+      if (!rawJSON) {
+        const finishReason = geminiData.candidates?.[0]?.finishReason || "UNKNOWN";
+        throw new Error(`Gemini Error. Finish Reason: ${finishReason}`);
+      }
 
       const brainData: BrainResponse = JSON.parse(rawJSON);
       console.log(`🤖 Thinking:`, brainData);
 
-      // STEP 3: SPEAK (ElevenLabs Turbo - Text to Speech)
+      // STEP 3: SPEAK (ElevenLabs Turbo)
       const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${env.VOICE_ID}/stream`, {
         method: "POST",
         headers: {
