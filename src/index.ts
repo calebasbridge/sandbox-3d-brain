@@ -1,6 +1,6 @@
 // src/index.ts
 
-// 1. DEFINE ENV INTERFACE LOCALLY (No external imports)
+// 1. DEFINE ENV INTERFACE LOCALLY
 export interface Env {
   ELEVENLABS_API_KEY: string;
   GEMINI_API_KEY: string;
@@ -18,7 +18,6 @@ function getCorsHeaders() {
   };
 }
 
-// Define the shape of the Gemini response
 interface BrainResponse {
   text: string;
   compliance: number;
@@ -64,9 +63,8 @@ export default {
 
       console.log(`👂 Heard: "${userText}"`);
 
-      // STEP 2: THINK (Gemini 2.5 Flash - STABLE)
-      // ✅ CHANGED: Switched to "gemini-2.5-flash" (Current Stable)
-      let history = [];
+      // STEP 2: THINK (Gemini 2.5 Flash)
+      let history: any[] = [];
       try {
         if (historyRaw) history = JSON.parse(historyRaw);
       } catch (e) {
@@ -96,19 +94,31 @@ export default {
         }
       `;
 
+      // ✅ FIX: Correctly map history from Frontend to Gemini
+      const formattedHistory = history.map((msg: any) => {
+        // If Frontend sends Gemini-native format ({ role: 'model', parts: [...] })
+        if (msg.parts && Array.isArray(msg.parts)) {
+          return {
+            role: msg.role === 'assistant' ? 'model' : msg.role, // Normalize 'assistant' just in case
+            parts: msg.parts
+          };
+        }
+        // Fallback for simple format ({ role: 'user', content: '...' })
+        return {
+          role: msg.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: msg.content || "" }]
+        };
+      });
+
       const geminiPayload = {
         contents: [
           { role: "user", parts: [{ text: systemPrompt }] },
-          ...history.map((msg: any) => ({
-            role: msg.role === "assistant" ? "model" : "user",
-            parts: [{ text: msg.content }]
-          })),
+          ...formattedHistory, // Inject fixed history
           { role: "user", parts: [{ text: userText }] }
         ],
         generationConfig: {
           response_mime_type: "application/json" 
         },
-        // 🛡️ CRITICAL: DISABLE SAFETY FILTERS FOR PRISON SIMULATION
         safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
           { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -117,7 +127,6 @@ export default {
         ]
       };
 
-      // ✅ URL UPDATED: Using gemini-2.5-flash
       const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -126,14 +135,15 @@ export default {
 
       const geminiData: any = await geminiResponse.json();
       
-      // 🕵️ DEBUG: Log the full response
+      // Log response for debugging
       console.log("Gemini Raw Response:", JSON.stringify(geminiData));
 
       const rawJSON = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
       
       if (!rawJSON) {
         const finishReason = geminiData.candidates?.[0]?.finishReason || "UNKNOWN";
-        throw new Error(`Gemini Error. Finish Reason: ${finishReason}`);
+        const errorDetails = JSON.stringify(geminiData); // Capture full error
+        throw new Error(`Gemini Error. Finish Reason: ${finishReason}. Details: ${errorDetails}`);
       }
 
       const brainData: BrainResponse = JSON.parse(rawJSON);
