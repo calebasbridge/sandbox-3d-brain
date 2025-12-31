@@ -21,7 +21,7 @@ Rules:
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     
-    // 1. CORS GATEKEEPER (Allow All for Dev)
+    // 1. CORS GATEKEEPER
     if (request.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders() });
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers: getCorsHeaders() });
 
@@ -30,13 +30,11 @@ export default {
       
       const formData = await request.formData();
       const audioFile = formData.get("audio");
+      const historyRaw = formData.get("history"); // New: Get history string
 
       if (!audioFile || !(audioFile instanceof File)) throw new Error("No audio file provided");
-      console.log(`🎤 Received Audio: ${audioFile.size} bytes`);
 
-      if (audioFile.size < 100) throw new Error("Audio file too short.");
-
-      // STEP 1: LISTEN
+      // STEP 1: LISTEN (ElevenLabs STT)
       const sttFormData = new FormData();
       sttFormData.append("model_id", "scribe_v1");
       sttFormData.append("file", audioFile); 
@@ -48,27 +46,46 @@ export default {
       });
 
       if (!sttResponse.ok) {
-        const err = await sttResponse.text();
-        throw new Error(`ElevenLabs STT Failed: ${err}`);
+        throw new Error(`ElevenLabs STT Failed`);
       }
       
       const sttJson = await sttResponse.json() as any;
       const userText = sttJson.text || "";
       console.log(`🗣️ Heard: "${userText}"`);
 
-      // STEP 2: THINK
+      // STEP 2: THINK (Gemini 2.5 Flash)
       let aiText = "I couldn't hear you, Officer. Say again?";
       
       if (userText.trim().length > 1) {
-        // Updated URL: Updated to Gemini 2.5-flash'
+        
+        // Parse Previous History
+        let previousContext = [];
+        try {
+          if (typeof historyRaw === 'string') {
+            previousContext = JSON.parse(historyRaw);
+          }
+        } catch (e) {
+          console.warn("Failed to parse history", e);
+        }
+
+        // Construct Gemini Payload
+        // We use system_instruction for the persona, and contents for the chat log
+        const payload = {
+          system_instruction: {
+            parts: [{ text: SYSTEM_PROMPT }]
+          },
+          contents: [
+            ...previousContext, // Inject Memory
+            { role: "user", parts: [{ text: userText }] } // Current input
+          ]
+        };
+
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
         
         const geminiResponse = await fetch(geminiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: SYSTEM_PROMPT }, { text: `User said: "${userText}"` }] }]
-          })
+          body: JSON.stringify(payload)
         });
 
         if (!geminiResponse.ok) {
@@ -83,7 +100,7 @@ export default {
       
       console.log(`🤖 Responding: "${aiText}"`);
 
-      // STEP 3: SPEAK
+      // STEP 3: SPEAK (ElevenLabs TTS)
       const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${env.VOICE_ID}/stream`, {
         method: "POST",
         headers: {
@@ -103,7 +120,7 @@ export default {
       const newHeaders = new Headers(getCorsHeaders());
       newHeaders.set("Content-Type", "audio/mpeg");
       newHeaders.set("X-Ai-Text", aiText);
-      newHeaders.set("X-User-Text", userText);
+      newHeaders.set("X-User-Text", userText); // Ensure we return what we heard
       newHeaders.set("Access-Control-Expose-Headers", "X-Ai-Text, X-User-Text");
 
       return new Response(ttsResponse.body, { headers: newHeaders });
