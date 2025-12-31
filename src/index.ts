@@ -1,6 +1,6 @@
 // src/index.ts
 
-// 1. DEFINE ENV INTERFACE LOCALLY
+// 1. DEFINE ENV INTERFACE LOCALLY (No external imports)
 export interface Env {
   ELEVENLABS_API_KEY: string;
   GEMINI_API_KEY: string;
@@ -64,7 +64,8 @@ export default {
 
       console.log(`👂 Heard: "${userText}"`);
 
-      // STEP 2: THINK (Gemini 2.0 Flash - JSON Mode + SAFETY OFF)
+      // STEP 2: THINK (Gemini 2.5 Flash - STABLE)
+      // ✅ CHANGED: Switched to "gemini-2.5-flash" (Current Stable)
       let history = [];
       try {
         if (historyRaw) history = JSON.parse(historyRaw);
@@ -116,7 +117,8 @@ export default {
         ]
       };
 
-      const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${env.GEMINI_API_KEY}`, {
+      // ✅ URL UPDATED: Using gemini-2.5-flash
+      const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(geminiPayload)
@@ -124,7 +126,7 @@ export default {
 
       const geminiData: any = await geminiResponse.json();
       
-      // 🕵️ DEBUG: Log the full response to see "finishReason"
+      // 🕵️ DEBUG: Log the full response
       console.log("Gemini Raw Response:", JSON.stringify(geminiData));
 
       const rawJSON = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
