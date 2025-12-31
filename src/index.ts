@@ -1,6 +1,6 @@
-// REMOVED: import { Env } from './worker-configuration';
+// src/index.ts
 
-// 1. DEFINE ENV INTERFACE LOCALLY (Fixes the "Cannot find module" error)
+// 1. DEFINE ENV INTERFACE LOCALLY
 export interface Env {
   ELEVENLABS_API_KEY: string;
   GEMINI_API_KEY: string;
@@ -41,10 +41,12 @@ export default {
 
       if (!audioFile || !(audioFile instanceof File)) throw new Error("No audio file provided");
 
+      console.log(`🎤 Audio Received: ${audioFile.size} bytes, type: ${audioFile.type}`);
+
       // STEP 1: HEAR (ElevenLabs Scribe - Speech to Text)
       const scribeFormData = new FormData();
       scribeFormData.append("file", audioFile);
-      scribeFormData.append("model_id", "scribble_google_v1"); 
+      scribeFormData.append("model_id", "scribe_v1"); // ✅ FIXED: Standard Model ID
 
       const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
@@ -52,14 +54,18 @@ export default {
         body: scribeFormData,
       });
 
-      if (!sttResponse.ok) throw new Error(`ElevenLabs STT Failed: ${sttResponse.statusText}`);
+      if (!sttResponse.ok) {
+        // 🔍 DEBUG: Read the actual error message from ElevenLabs
+        const errorText = await sttResponse.text();
+        throw new Error(`ElevenLabs STT Failed (${sttResponse.status}): ${errorText}`);
+      }
+
       const sttData = await sttResponse.json() as { text: string };
       const userText = sttData.text;
 
       console.log(`👂 Heard: "${userText}"`);
 
       // STEP 2: THINK (Gemini 2.0 Flash - JSON Mode)
-      // Parse history if it exists
       let history = [];
       try {
         if (historyRaw) history = JSON.parse(historyRaw);
@@ -100,7 +106,7 @@ export default {
           { role: "user", parts: [{ text: userText }] }
         ],
         generationConfig: {
-          response_mime_type: "application/json" // FORCE JSON
+          response_mime_type: "application/json" 
         }
       };
 
@@ -115,12 +121,10 @@ export default {
       
       if (!rawJSON) throw new Error("Gemini returned empty response");
 
-      // Parse Gemini's JSON
       const brainData: BrainResponse = JSON.parse(rawJSON);
       console.log(`🤖 Thinking:`, brainData);
 
       // STEP 3: SPEAK (ElevenLabs Turbo - Text to Speech)
-      // We use brainData.text for the audio
       const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${env.VOICE_ID}/stream`, {
         method: "POST",
         headers: {
@@ -134,19 +138,22 @@ export default {
         }),
       });
 
-      if (!ttsResponse.ok) throw new Error(`ElevenLabs TTS Failed`);
+      if (!ttsResponse.ok) {
+        const errorText = await ttsResponse.text();
+        throw new Error(`ElevenLabs TTS Failed (${ttsResponse.status}): ${errorText}`);
+      }
 
-      // STEP 4: RETURN RESPONSE (Audio + Headers)
+      // STEP 4: RETURN RESPONSE
       const responseHeaders = new Headers(getCorsHeaders());
       responseHeaders.set("Content-Type", "audio/mpeg");
       responseHeaders.set("X-Ai-Text", brainData.text);
       responseHeaders.set("X-User-Text", userText);
-      responseHeaders.set("X-Compliance-Score", brainData.compliance.toString()); // PASS THE SCORE
+      responseHeaders.set("X-Compliance-Score", brainData.compliance.toString());
 
       return new Response(ttsResponse.body, { headers: responseHeaders });
 
     } catch (err: any) {
-      console.error(err);
+      console.error("Worker Error:", err);
       return new Response(JSON.stringify({ error: err.message }), { 
         status: 500, 
         headers: { ...getCorsHeaders(), "Content-Type": "application/json" } 
